@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Ella</title>
+  <link rel="stylesheet" href="panel.css" />
+</head>
+<body>
+  <div id="app">
+
+    <!-- Header -->
+    <header class="header">
+      <div class="header-logo">
+        <div class="logo-dot"></div>
+        <span class="logo-name">Ella</span>
+        <span class="logo-tag">AI Agent</span>
+      </div>
+      <button id="btn-settings" class="icon-btn" title="Configuración" aria-label="Abrir configuración">⚙</button>
+    </header>
+
+    <!-- Settings Panel -->
+    <section id="settings-panel" class="settings-panel hidden" aria-label="Configuración">
+
+      <div class="settings-block">
+        <label>Proveedor activo</label>
+        <div class="provider-tabs" role="tablist">
+          <button class="provider-tab" data-provider="groq" role="tab">Groq</button>
+          <button class="provider-tab" data-provider="gemini" role="tab">Gemini</button>
+          <button class="provider-tab" data-provider="openai" role="tab">OpenAI</button>
+        </div>
+      </div>
+
+      <div class="settings-block">
+        <label id="key-label">API Key de Groq</label>
+        <div class="settings-row">
+          <input id="api-key-input" type="password" placeholder="gsk_..." autocomplete="off" />
+          <button id="btn-save-key" class="btn-primary btn-sm">Guardar</button>
+        </div>
+        <p class="settings-note">
+          Groq: <a href="https://console.groq.com/keys" target="_blank">console.groq.com/keys</a><br/>
+          Gemini: <a href="https://aistudio.google.com/app/apikey" target="_blank">aistudio.google.com</a><br/>
+          OpenAI: <a href="https://platform.openai.com/api-keys" target="_blank">platform.openai.com</a>
+        </p>
+        <div id="key-status" class="key-status hidden"></div>
+      </div>
+    </section>
+
+    <!-- Goal Input -->
+    <section class="goal-section" aria-label="Instrucción para Ella">
+      <div class="goal-label-row">
+        <label for="goal-input">¿Qué quieres que haga Ella?</label>
+        <span id="active-provider-badge" class="provider-badge">Groq</span>
+      </div>
+      <div class="goal-row">
+        <textarea
+          id="goal-input"
+          rows="3"
+          placeholder="Ej: Busca MissaSinfonia en YouTube..."
+          aria-label="Instrucción para Ella"
+        ></textarea>
+      </div>
+      <div class="goal-actions">
+        <button id="btn-start" class="btn-primary" aria-label="Iniciar agente">
+          <span class="btn-icon">▶</span> Iniciar
+        </button>
+        <button id="btn-stop" class="btn-danger hidden" aria-label="Detener agente">
+          <span class="btn-icon">■</span> Detener
+        </button>
+      </div>
+    </section>
+
+    <!-- Status Bar -->
+    <div id="status-bar" class="status-bar status-idle">
+      <span id="status-indicator" class="status-dot"></span>
+      <span id="status-text">Lista</span>
+      <span id="step-counter" class="step-counter hidden">Paso <span id="step-num">0</span></span>
+    </div>
+
+    <!-- Thought Stream -->
+    <section class="thought-section" aria-label="Pensamientos de Ella">
+      <div class="thought-header">
+        <span>Pensamiento de Ella</span>
+        <button id="btn-clear" class="text-btn" title="Limpiar historial">Limpiar</button>
+      </div>
+      <div id="thought-stream" class="thought-stream" role="log" aria-live="polite">
+        <div class="thought-empty">Los pensamientos de Ella aparecerán aquí cuando esté activa.</div>
+      </div>
+    </section>
+
+  </div>
+  <script src="panel.js"></script>
+</body>
+</html>
