@@ -21,7 +21,6 @@
 
     <!-- Settings Panel -->
     <section id="settings-panel" class="settings-panel hidden" aria-label="Configuración">
-
       <div class="settings-block">
         <label>Proveedor activo</label>
         <div class="provider-tabs" role="tablist">
@@ -30,7 +29,6 @@
           <button class="provider-tab" data-provider="openai" role="tab">OpenAI</button>
         </div>
       </div>
-
       <div class="settings-block">
         <label id="key-label">API Key de Groq</label>
         <div class="settings-row">
@@ -46,47 +44,115 @@
       </div>
     </section>
 
-    <!-- Goal Input -->
-    <section class="goal-section" aria-label="Instrucción para Ella">
-      <div class="goal-label-row">
-        <label for="goal-input">¿Qué quieres que haga Ella?</label>
-        <span id="active-provider-badge" class="provider-badge">Groq</span>
-      </div>
-      <div class="goal-row">
+    <!-- Main Tab Bar -->
+    <nav class="main-tabs" role="tablist">
+      <button class="main-tab active" data-tab="task" role="tab" aria-selected="true">
+        ▶ Tarea
+      </button>
+      <button class="main-tab" data-tab="knowledge" role="tab" aria-selected="false">
+        🧠 Conocimiento
+      </button>
+    </nav>
+
+    <!-- ═══ TAB: TAREA ═══ -->
+    <div id="tab-task" class="tab-panel">
+
+      <!-- Goal Input -->
+      <section class="goal-section">
+        <div class="goal-label-row">
+          <label for="goal-input">¿Qué quieres que haga Ella?</label>
+          <span id="active-provider-badge" class="provider-badge">Groq</span>
+        </div>
         <textarea
           id="goal-input"
           rows="3"
-          placeholder="Ej: Busca MissaSinfonia en YouTube..."
-          aria-label="Instrucción para Ella"
+          placeholder="Ej: Busca MissaSinfonia en YouTube y abre el primer vídeo..."
         ></textarea>
-      </div>
-      <div class="goal-actions">
-        <button id="btn-start" class="btn-primary" aria-label="Iniciar agente">
-          <span class="btn-icon">▶</span> Iniciar
-        </button>
-        <button id="btn-stop" class="btn-danger hidden" aria-label="Detener agente">
-          <span class="btn-icon">■</span> Detener
-        </button>
-      </div>
-    </section>
+        <div class="goal-actions">
+          <button id="btn-start" class="btn-primary">
+            <span class="btn-icon">▶</span> Iniciar
+          </button>
+          <button id="btn-stop" class="btn-danger hidden">
+            <span class="btn-icon">■</span> Detener
+          </button>
+        </div>
+      </section>
 
-    <!-- Status Bar -->
-    <div id="status-bar" class="status-bar status-idle">
-      <span id="status-indicator" class="status-dot"></span>
-      <span id="status-text">Lista</span>
-      <span id="step-counter" class="step-counter hidden">Paso <span id="step-num">0</span></span>
+      <!-- Status Bar -->
+      <div id="status-bar" class="status-bar status-idle">
+        <span class="status-dot"></span>
+        <span id="status-text">Lista</span>
+        <span id="step-counter" class="step-counter hidden">Paso <span id="step-num">0</span></span>
+      </div>
+
+      <!-- Thought Stream -->
+      <section class="thought-section">
+        <div class="thought-header">
+          <span>Pensamiento de Ella</span>
+          <button id="btn-clear" class="text-btn">Limpiar</button>
+        </div>
+        <div id="thought-stream" class="thought-stream" role="log" aria-live="polite">
+          <div class="thought-empty">Los pensamientos de Ella aparecerán aquí cuando esté activa.</div>
+        </div>
+      </section>
+
     </div>
 
-    <!-- Thought Stream -->
-    <section class="thought-section" aria-label="Pensamientos de Ella">
-      <div class="thought-header">
-        <span>Pensamiento de Ella</span>
-        <button id="btn-clear" class="text-btn" title="Limpiar historial">Limpiar</button>
-      </div>
-      <div id="thought-stream" class="thought-stream" role="log" aria-live="polite">
-        <div class="thought-empty">Los pensamientos de Ella aparecerán aquí cuando esté activa.</div>
-      </div>
-    </section>
+    <!-- ═══ TAB: CONOCIMIENTO ═══ -->
+    <div id="tab-knowledge" class="tab-panel hidden">
+
+      <!-- Global Instructions -->
+      <section class="knowledge-section">
+        <div class="knowledge-section-header">
+          <span class="knowledge-section-title">Instrucciones globales</span>
+          <span class="knowledge-section-hint">Siempre activas en cada tarea</span>
+        </div>
+        <textarea
+          id="global-instructions"
+          rows="4"
+          class="knowledge-textarea"
+          placeholder="Ej: Siempre navega en español. Nunca aceptes cookies. Prefiere resultados orgánicos sobre anuncios..."
+        ></textarea>
+        <button id="btn-save-global" class="btn-primary btn-sm">Guardar instrucciones globales</button>
+      </section>
+
+      <div class="knowledge-divider"></div>
+
+      <!-- Platform Knowledge -->
+      <section class="knowledge-section">
+        <div class="knowledge-section-header">
+          <span class="knowledge-section-title">Conocimiento por plataforma</span>
+          <span class="knowledge-section-hint">Se activa automáticamente según la URL</span>
+        </div>
+
+        <!-- Add / Edit Form -->
+        <div id="platform-form" class="platform-form">
+          <input id="platform-name" type="text" placeholder="Nombre (ej: YouTube)" class="knowledge-input" />
+          <input id="platform-pattern" type="text" placeholder="Patrón de URL (ej: youtube.com)" class="knowledge-input" />
+          <textarea
+            id="platform-instructions"
+            rows="4"
+            class="knowledge-textarea"
+            placeholder="Instrucciones para esta plataforma. Ej:
+- El campo de búsqueda principal tiene aria-label='Search'.
+- Para filtrar por fecha usa el menú 'Filtros' debajo de la barra de búsqueda.
+- Los vídeos en la lista de resultados tienen rol 'link' con el título del vídeo."
+          ></textarea>
+          <div class="platform-form-actions">
+            <button id="btn-save-platform" class="btn-primary btn-sm">
+              <span id="platform-save-label">Añadir plataforma</span>
+            </button>
+            <button id="btn-cancel-edit" class="btn-ghost btn-sm hidden">Cancelar</button>
+          </div>
+        </div>
+
+        <!-- Platform List -->
+        <div id="platform-list" class="platform-list">
+          <div class="platform-empty">No hay plataformas guardadas todavía.</div>
+        </div>
+      </section>
+
+    </div>
 
   </div>
   <script src="panel.js"></script>

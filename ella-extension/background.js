@@ -1,6 +1,6 @@
 /**
  * ELLA - Background Service Worker
- * Manages the autonomous Think→Act loop.
+ * Multi-tab autonomous agent: Think→Act loop across the full browser.
  * Supports OpenAI, Groq and Google Gemini as LLM providers.
  */
 
@@ -13,7 +13,8 @@ let agentState = {
   currentGoal: null,
   history: [],
   stepCount: 0,
-  maxSteps: 15
+  maxSteps: 20,
+  currentTabId: null
 };
 
 // ─── URL Restriction Check ─────────────────────────────────────────────────
@@ -30,7 +31,7 @@ function broadcastToPanel(event) {
   chrome.runtime.sendMessage({ target: 'panel', ...event }).catch(() => {});
 }
 
-// ─── Content Script Injection ──────────────────────────────────────────────
+// ─── Content Script Management ─────────────────────────────────────────────
 
 async function ensureContentScript(tabId) {
   try {
@@ -51,43 +52,25 @@ async function ensureContentScript(tabId) {
   }
 }
 
-// ─── Page State ────────────────────────────────────────────────────────────
+// ─── Tab Helpers ────────────────────────────────────────────────────────────
 
-async function getPageState(tabId) {
-  const loaded = await ensureContentScript(tabId);
-  if (!loaded) return null;
-
-  return new Promise(resolve => {
-    chrome.tabs.sendMessage(tabId, { type: 'ELLA_GET_PAGE_STATE' }, response => {
-      if (chrome.runtime.lastError) { resolve(null); return; }
-      resolve(response?.state ?? null);
-    });
-  });
+/**
+ * Returns a list of all non-restricted tabs in the current window.
+ */
+async function getAllTabs() {
+  const tabs = await chrome.tabs.query({ currentWindow: true });
+  return tabs.filter(t => !isRestrictedUrl(t.url)).map(t => ({
+    tabId: t.id,
+    url: t.url,
+    title: t.title || '(sin título)',
+    active: t.active
+  }));
 }
 
-// ─── Action Executor ───────────────────────────────────────────────────────
-
-async function executeActionInTab(tabId, action) {
-  if (action.type === 'navigate') {
-    const target = /^https?:\/\//i.test(action.url) ? action.url : `https://${action.url}`;
-    await chrome.tabs.update(tabId, { url: target });
-    await waitForTabLoad(tabId);
-    await ensureContentScript(tabId);
-    return { success: true, action: 'navigate', url: target };
-  }
-
-  return new Promise(resolve => {
-    chrome.tabs.sendMessage(tabId, { type: 'ELLA_EXECUTE_ACTION', action }, response => {
-      if (chrome.runtime.lastError) {
-        resolve({ success: false, error: chrome.runtime.lastError.message });
-        return;
-      }
-      resolve(response ?? { success: false, error: 'Sin respuesta del content script' });
-    });
-  });
-}
-
-function waitForTabLoad(tabId) {
+/**
+ * Waits for a tab to finish loading.
+ */
+function waitForTabLoad(tabId, timeout = 20000) {
   return new Promise(resolve => {
     const listener = (id, _info, tab) => {
       if (id === tabId && tab.status === 'complete') {
@@ -96,40 +79,202 @@ function waitForTabLoad(tabId) {
       }
     };
     chrome.tabs.onUpdated.addListener(listener);
-    setTimeout(() => { chrome.tabs.onUpdated.removeListener(listener); resolve(); }, 20000);
+    setTimeout(() => { chrome.tabs.onUpdated.removeListener(listener); resolve(); }, timeout);
   });
+}
+
+// ─── Page State ────────────────────────────────────────────────────────────
+
+async function getPageState(tabId) {
+  const loaded = await ensureContentScript(tabId);
+  if (!loaded) return null;
+
+  const [pageState, tabs] = await Promise.all([
+    new Promise(resolve => {
+      chrome.tabs.sendMessage(tabId, { type: 'ELLA_GET_PAGE_STATE' }, response => {
+        if (chrome.runtime.lastError) { resolve(null); return; }
+        resolve(response?.state ?? null);
+      });
+    }),
+    getAllTabs()
+  ]);
+
+  if (!pageState) return null;
+  return { ...pageState, tabs };
+}
+
+// ─── Action Executor ───────────────────────────────────────────────────────
+
+/**
+ * Executes an action and returns the new currentTabId (may change on tab actions).
+ */
+async function executeAction(tabId, action) {
+  let newTabId = tabId;
+
+  switch (action.type) {
+
+    case 'navigate': {
+      const target = /^https?:\/\//i.test(action.url) ? action.url : `https://${action.url}`;
+      await chrome.tabs.update(tabId, { url: target });
+      await waitForTabLoad(tabId);
+      await ensureContentScript(tabId);
+      broadcastToPanel({ type: 'ELLA_TAB_EVENT', event: 'navigate', tabId, url: target });
+      return { result: { success: true, action: 'navigate', url: target }, newTabId };
+    }
+
+    case 'new_tab': {
+      const target = /^https?:\/\//i.test(action.url) ? action.url : `https://${action.url}`;
+      const background = action.background === true;
+      const tab = await chrome.tabs.create({ url: target, active: !background });
+      await waitForTabLoad(tab.id);
+      await ensureContentScript(tab.id);
+      if (!background) newTabId = tab.id;
+      broadcastToPanel({ type: 'ELLA_TAB_EVENT', event: 'new_tab', tabId: tab.id, url: target, background });
+      return {
+        result: { success: true, action: 'new_tab', tabId: tab.id, url: target },
+        newTabId
+      };
+    }
+
+    case 'switch_tab': {
+      const targetId = action.tabId;
+      try {
+        await chrome.tabs.update(targetId, { active: true });
+        await ensureContentScript(targetId);
+        newTabId = targetId;
+        broadcastToPanel({ type: 'ELLA_TAB_EVENT', event: 'switch_tab', tabId: targetId });
+        return { result: { success: true, action: 'switch_tab', tabId: targetId }, newTabId };
+      } catch (e) {
+        return { result: { success: false, error: `No se pudo cambiar a la pestaña ${targetId}: ${e.message}` }, newTabId };
+      }
+    }
+
+    case 'close_tab': {
+      const closeId = action.tabId ?? tabId;
+      try {
+        await chrome.tabs.remove(closeId);
+        broadcastToPanel({ type: 'ELLA_TAB_EVENT', event: 'close_tab', tabId: closeId });
+
+        if (closeId === tabId) {
+          const remaining = await getAllTabs();
+          if (remaining.length > 0) {
+            newTabId = remaining[remaining.length - 1].tabId;
+            await chrome.tabs.update(newTabId, { active: true });
+            await ensureContentScript(newTabId);
+          }
+        }
+        return { result: { success: true, action: 'close_tab', tabId: closeId }, newTabId };
+      } catch (e) {
+        return { result: { success: false, error: e.message }, newTabId };
+      }
+    }
+
+    default: {
+      const result = await new Promise(resolve => {
+        chrome.tabs.sendMessage(tabId, { type: 'ELLA_EXECUTE_ACTION', action }, response => {
+          if (chrome.runtime.lastError) {
+            resolve({ success: false, error: chrome.runtime.lastError.message });
+            return;
+          }
+          resolve(response ?? { success: false, error: 'Sin respuesta del content script' });
+        });
+      });
+      return { result, newTabId };
+    }
+  }
 }
 
 // ─── LLM Communication ────────────────────────────────────────────────────
 
-const SYSTEM_PROMPT = `You are Ella, an autonomous web agent. Accomplish the user's goal by interacting with web pages step by step.
+const BASE_SYSTEM_PROMPT = `You are Ella, an autonomous web agent with full browser control. Accomplish the user's goal by interacting with web pages step by step. You can work across multiple tabs.
 
 Respond ONLY with a JSON object in this exact format:
 {
   "thought": "Your brief reasoning (1-2 sentences max)",
   "action": {
-    "type": "click" | "type" | "navigate" | "scroll" | "done" | "error",
+    "type": "click" | "type" | "navigate" | "scroll" | "new_tab" | "switch_tab" | "close_tab" | "done" | "error",
     "ellaId": <number>,
     "text": "<string>",
     "url": "<string>",
+    "background": false,
+    "tabId": <number>,
     "direction": "up" | "down",
     "amount": <number>,
     "message": "<string>"
   }
 }
 
-Rules:
-- "done": goal fully accomplished. "error": goal is impossible or stuck.
-- Prefer existing page elements over navigation.
+Action rules:
+- "navigate": loads a URL in the CURRENT tab.
+- "new_tab": opens a URL in a NEW tab and switches to it (unless background: true).
+- "switch_tab": switches the active tab using tabId from the OPEN TABS list.
+- "close_tab": closes a tab by tabId. Omit tabId to close the current tab.
+- "done": goal fully accomplished.
+- "error": goal is impossible or you are stuck after multiple attempts.
 - Only respond with the JSON — no markdown, no explanation.`;
 
+// ─── Knowledge Base Helpers ────────────────────────────────────────────────
+
+async function loadKnowledge() {
+  return new Promise(resolve => {
+    chrome.storage.local.get(['ella_global_instructions', 'ella_platform_knowledge'], data => {
+      resolve({
+        global: data.ella_global_instructions || '',
+        platforms: data.ella_platform_knowledge || {}
+      });
+    });
+  });
+}
+
+/**
+ * Finds platform knowledge entries that match the current URL.
+ */
+function matchingPlatforms(url, platforms) {
+  try {
+    const hostname = new URL(url).hostname;
+    return Object.values(platforms).filter(entry => {
+      const pattern = entry.pattern.toLowerCase().replace(/^https?:\/\//, '');
+      return hostname.includes(pattern) || pattern.includes(hostname);
+    });
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Builds the full system prompt including any active knowledge.
+ */
+function buildSystemPrompt(globalInstructions, matchedPlatforms) {
+  let prompt = BASE_SYSTEM_PROMPT;
+
+  if (globalInstructions) {
+    prompt += `\n\n--- GLOBAL INSTRUCTIONS (always follow these) ---\n${globalInstructions}`;
+  }
+
+  if (matchedPlatforms.length > 0) {
+    const sections = matchedPlatforms.map(p =>
+      `[${p.name} — ${p.pattern}]\n${p.instructions}`
+    ).join('\n\n');
+    prompt += `\n\n--- PLATFORM KNOWLEDGE (you are on a known platform — use this) ---\n${sections}`;
+  }
+
+  return prompt;
+}
+
 function buildUserMessage(goal, pageState, history) {
+  const tabsList = pageState.tabs && pageState.tabs.length > 0
+    ? `\nOPEN TABS:\n${pageState.tabs.map(t =>
+        `  [tabId: ${t.tabId}]${t.tabId === pageState.currentTabId ? ' (ACTIVE)' : ''} ${new URL(t.url).hostname || t.url} — "${t.title.slice(0, 60)}"`
+      ).join('\n')}`
+    : '';
+
   return `GOAL: ${goal}
 
-PAGE STATE:
+CURRENT PAGE:
 URL: ${pageState.url}
-Title: ${pageState.title}
-Interactive Elements:
+Title: ${pageState.title}${tabsList}
+
+INTERACTIVE ELEMENTS on current page:
 ${pageState.elements.slice(0, 60).map(el =>
   `[${el.id}] ${el.tag}${el.type ? `[type=${el.type}]` : ''}${el.role ? `[role=${el.role}]` : ''} — "${el.text || el.placeholder || '(sin etiqueta)'}"`
 ).join('\n')}
@@ -140,14 +285,11 @@ ${history.slice(-5).map((h, i) =>
 ).join('\n') || 'None yet.'}`;
 }
 
-/**
- * Calls an OpenAI-compatible API (works for OpenAI and Groq).
- */
-async function callOpenAIFormat(provider, apiKey, userMessage) {
+async function callOpenAIFormat(provider, apiKey, systemPrompt, userMessage) {
   const body = {
     model: provider.model,
     messages: [
-      { role: 'system', content: SYSTEM_PROMPT },
+      { role: 'system', content: systemPrompt },
       { role: 'user', content: userMessage }
     ],
     temperature: 0.2
@@ -175,17 +317,14 @@ async function callOpenAIFormat(provider, apiKey, userMessage) {
   return data.choices?.[0]?.message?.content ?? '';
 }
 
-/**
- * Calls the Google Gemini API.
- */
-async function callGeminiFormat(provider, apiKey, userMessage) {
+async function callGeminiFormat(provider, apiKey, systemPrompt, userMessage) {
   const url = `https://generativelanguage.googleapis.com/v1beta/models/${provider.model}:generateContent?key=${apiKey}`;
 
   const response = await fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      systemInstruction: { parts: [{ text: SYSTEM_PROMPT }] },
+      systemInstruction: { parts: [{ text: systemPrompt }] },
       contents: [{ role: 'user', parts: [{ text: userMessage }] }],
       generationConfig: { responseMimeType: 'application/json', temperature: 0.2 }
     })
@@ -193,26 +332,19 @@ async function callGeminiFormat(provider, apiKey, userMessage) {
 
   if (!response.ok) {
     const err = await response.json().catch(() => ({}));
-    const msg = err.error?.message || `HTTP ${response.status}: ${response.statusText}`;
-    throw new Error(msg);
+    throw new Error(err.error?.message || `HTTP ${response.status}: ${response.statusText}`);
   }
 
   const data = await response.json();
   return data.candidates?.[0]?.content?.parts?.[0]?.text ?? '';
 }
 
-/**
- * Extracts JSON from a raw string, tolerating markdown code fences.
- */
 function extractJSON(raw) {
   const clean = raw.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
   return JSON.parse(clean);
 }
 
-/**
- * Main LLM query — dispatches to the right provider format.
- */
-async function queryLLM(providerKey, goal, pageState, history) {
+async function queryLLM(providerKey, systemPrompt, goal, pageState, history) {
   const provider = PROVIDERS[providerKey];
   if (!provider) throw new Error(`Proveedor desconocido: ${providerKey}`);
 
@@ -223,9 +355,9 @@ async function queryLLM(providerKey, goal, pageState, history) {
 
   let rawText;
   if (provider.format === 'gemini') {
-    rawText = await callGeminiFormat(provider, apiKey, userMessage);
+    rawText = await callGeminiFormat(provider, apiKey, systemPrompt, userMessage);
   } else {
-    rawText = await callOpenAIFormat(provider, apiKey, userMessage);
+    rawText = await callOpenAIFormat(provider, apiKey, systemPrompt, userMessage);
   }
 
   if (!rawText) throw new Error('Respuesta vacía del LLM');
@@ -234,10 +366,10 @@ async function queryLLM(providerKey, goal, pageState, history) {
 
 // ─── Think→Act Loop ────────────────────────────────────────────────────────
 
-async function runAgentLoop(goal, tabId, providerKey) {
-  const tab = await chrome.tabs.get(tabId);
+async function runAgentLoop(goal, startTabId, providerKey) {
+  const startTab = await chrome.tabs.get(startTabId);
 
-  if (isRestrictedUrl(tab.url)) {
+  if (isRestrictedUrl(startTab.url)) {
     broadcastToPanel({
       type: 'ELLA_ERROR',
       message: 'Ella no puede operar en páginas del sistema (chrome://, extensiones, etc.). Navega a un sitio web normal primero.'
@@ -249,6 +381,10 @@ async function runAgentLoop(goal, tabId, providerKey) {
   agentState.currentGoal = goal;
   agentState.history = [];
   agentState.stepCount = 0;
+  agentState.currentTabId = startTabId;
+
+  // Load knowledge base once at the start of the session
+  const knowledge = await loadKnowledge();
 
   broadcastToPanel({ type: 'ELLA_AGENT_STARTED', goal, provider: PROVIDERS[providerKey]?.name });
 
@@ -257,12 +393,28 @@ async function runAgentLoop(goal, tabId, providerKey) {
       agentState.stepCount++;
       broadcastToPanel({ type: 'ELLA_STEP_START', step: agentState.stepCount });
 
-      const pageState = await getPageState(tabId);
+      const pageState = await getPageState(agentState.currentTabId);
       if (!pageState) {
         throw new Error('No se pudo leer el estado de la página. Asegúrate de estar en un sitio web normal.');
       }
 
-      const llmResponse = await queryLLM(providerKey, goal, pageState, agentState.history);
+      pageState.currentTabId = agentState.currentTabId;
+
+      // Build system prompt with knowledge relevant to the current page URL
+      const matched = matchingPlatforms(pageState.url, knowledge.platforms);
+      const systemPrompt = buildSystemPrompt(knowledge.global, matched);
+
+      // On step 1, tell the panel which knowledge is active
+      if (agentState.stepCount === 1) {
+        const hints = [];
+        if (knowledge.global) hints.push('instrucciones globales');
+        if (matched.length > 0) hints.push(...matched.map(p => p.name));
+        if (hints.length > 0) {
+          broadcastToPanel({ type: 'ELLA_KNOWLEDGE_ACTIVE', hints });
+        }
+      }
+
+      const llmResponse = await queryLLM(providerKey, systemPrompt, goal, pageState, agentState.history);
       const { thought, action } = llmResponse;
 
       broadcastToPanel({ type: 'ELLA_THOUGHT', thought, step: agentState.stepCount });
@@ -279,7 +431,13 @@ async function runAgentLoop(goal, tabId, providerKey) {
         break;
       }
 
-      const result = await executeActionInTab(tabId, action);
+      const { result, newTabId } = await executeAction(agentState.currentTabId, action);
+
+      if (newTabId !== agentState.currentTabId) {
+        agentState.currentTabId = newTabId;
+        broadcastToPanel({ type: 'ELLA_TAB_SWITCHED', tabId: newTabId });
+      }
+
       broadcastToPanel({ type: 'ELLA_ACTION_RESULT', action, result, step: agentState.stepCount });
 
       agentState.history.push({ thought, action, result });
@@ -359,4 +517,4 @@ chrome.action.onClicked.addListener(async (tab) => {
 
 chrome.sidePanel.setPanelBehavior({ openPanelOnActionClick: true }).catch(() => {});
 
-console.log('[Ella] Background service worker started.');
+console.log('[Ella] Background service worker started (multi-tab mode).');
